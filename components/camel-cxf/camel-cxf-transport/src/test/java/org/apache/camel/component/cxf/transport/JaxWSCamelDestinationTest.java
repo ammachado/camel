@@ -19,7 +19,6 @@ package org.apache.camel.component.cxf.transport;
 import jakarta.xml.ws.Endpoint;
 
 import org.apache.camel.Exchange;
-import org.apache.camel.Processor;
 import org.apache.camel.builder.RouteBuilder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -28,7 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 // Test the CamelDestination with whole CXF context
-public class JaxWSCamelDestinationTest extends JaxWSCamelTestSupport {
+class JaxWSCamelDestinationTest extends JaxWSCamelTestSupport {
+
     private Endpoint endpoint;
 
     @AfterEach
@@ -42,42 +42,41 @@ public class JaxWSCamelDestinationTest extends JaxWSCamelTestSupport {
     protected RouteBuilder createRouteBuilder() throws Exception {
         return new RouteBuilder() {
 
+            @Override
             public void configure() throws Exception {
-
                 from("direct:start").to("direct:endpoint");
-
             }
         };
     }
 
     @Test
-    public void testDestinationContentType() {
+    void testDestinationContentType() {
         // publish the endpoint
         endpoint = publishSampleWS("direct:endpoint");
-        Exchange exchange = template.request("direct:start", new Processor() {
+        Exchange exchange = template.request("direct:start", e -> e.getIn().setBody(REQUEST));
 
-            @Override
-            public void process(Exchange exchange) throws Exception {
-                exchange.getIn().setBody(REQUEST);
-            }
-
-        });
         assertEquals("text/xml; charset=UTF-8", exchange.getMessage().getHeader(Exchange.CONTENT_TYPE, String.class));
         assertTrue(exchange.getMessage().getBody(String.class).indexOf("something!") > 0);
     }
 
     @Test
-    public void testDestinationWithGzip() {
+    void testDestinationWithGzipInterceptors() {
         // publish the endpoint
         endpoint = publishSampleWSWithGzipEnabled("direct:endpoint");
-        Exchange exchange = template.request("direct:start", new Processor() {
+        Exchange exchange = template.request("direct:start", e -> {
+            e.getIn().setBody(REQUEST);
+            e.getIn().setHeader("Accept-Encoding", "gzip");
+        });
+        assertEquals("gzip", exchange.getMessage().getHeader(Exchange.CONTENT_ENCODING, String.class));
+    }
 
-            @Override
-            public void process(Exchange exchange) throws Exception {
-                exchange.getIn().setBody(REQUEST);
-                exchange.getIn().setHeader("Accept-Encoding", "gzip");
-            }
-
+    @Test
+    void testDestinationWithGzipFeature() {
+        // publish the endpoint
+        endpoint = publishSampleWSWithGzipFeatureEnabled("direct:endpoint");
+        Exchange exchange = template.request("direct:start", e -> {
+            e.getIn().setBody(REQUEST);
+            e.getIn().setHeader("Accept-Encoding", "gzip");
         });
         assertEquals("gzip", exchange.getMessage().getHeader(Exchange.CONTENT_ENCODING, String.class));
     }

@@ -67,9 +67,25 @@ public class JaxWSCamelDestinationTest extends JaxWSCamelTestSupport {
     }
 
     @Test
-    public void testDestinationWithGzip() {
+    public void testDestinationWithGzipInterceptors() {
         // publish the endpoint
         endpoint = publishSampleWSWithGzipEnabled("direct:endpoint");
+        Exchange exchange = template.request("direct:start", new Processor() {
+
+            @Override
+            public void process(Exchange exchange) throws Exception {
+                exchange.getIn().setBody(REQUEST);
+                exchange.getIn().setHeader("Accept-Encoding", "gzip");
+            }
+
+        });
+        assertEquals("gzip", exchange.getMessage().getHeader(Exchange.CONTENT_ENCODING, String.class));
+    }
+
+    @Test
+    public void testDestinationWithGzipFeature() {
+        // publish the endpoint
+        endpoint = publishSampleWSWithGzipFeatureEnabled("direct:endpoint");
         Exchange exchange = template.request("direct:start", new Processor() {
 
             @Override

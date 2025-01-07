@@ -26,9 +26,9 @@
        http://camel.apache.org/schema/spring http://camel.apache.org/schema/spring/camel-spring.xsd
     ">
 
-  <bean class="org.springframework.beans.factory.config.PropertyPlaceholderConfigurer"/>
+  <bean class="org.springframework.context.support.PropertySourcesPlaceholderConfigurer"/>
 
-  <cxf:rsServer id="rsServer" address="http://localhost:${CXFTestSupport.port1}/CxfRsSpringConsumerTest/"
+  <cxf:rsServer id="rsServer1" address="http://localhost:${CXFTestSupport.port1}/CxfRsSpringConsumerTest1/"
     serviceClass="org.apache.camel.component.cxf.jaxrs.testbean.CustomerService">
     <cxf:providers>
        <ref bean="exceptionMapper"/>
@@ -43,16 +43,24 @@
        <ref bean="jsonProvider"/>
     </cxf:providers>
   </cxf:rsServer>
-  
+
+  <cxf:rsServer id="rsServer3" address="http://localhost:${CXFTestSupport.port1}/CxfRsSpringConsumerTest3/"
+    serviceClass="org.apache.camel.component.cxf.jaxrs.testbean.CustomerServiceResource">
+    <cxf:features>
+      <bean class="org.apache.cxf.transport.common.gzip.GZIPFeature"/>
+    </cxf:features>
+    <cxf:providers>
+      <ref bean="exceptionMapper"/>
+      <ref bean="jsonProvider"/>
+    </cxf:providers>
+  </cxf:rsServer>
+
   <cxf:rsServer id="rsServerInvoke" address="http://localhost:${CXFTestSupport.port1}/CxfRsSpringConsumerInvokeService/"
     serviceClass="org.apache.camel.component.cxf.jaxrs.testbean.CustomerService"/>
   
   <bean id="exceptionMapper" class="org.apache.camel.component.cxf.jaxrs.CustomExceptionMapper"/>
   <bean id="jsonProvider" class="org.apache.cxf.jaxrs.provider.json.JSONProvider"/>
 
-  <camelContext id="camel" xmlns="http://camel.apache.org/schema/spring">
-  </camelContext>
-  
-  
+  <camelContext id="camel" xmlns="http://camel.apache.org/schema/spring"/>
 
 </beans>

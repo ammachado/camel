@@ -34,6 +34,7 @@ import org.apache.cxf.Bus;
 import org.apache.cxf.BusFactory;
 import org.apache.cxf.jaxws.EndpointImpl;
 import org.apache.cxf.jaxws.JaxWsProxyFactoryBean;
+import org.apache.cxf.transport.common.gzip.GZIPFeature;
 import org.junit.jupiter.api.BeforeEach;
 
 public class JaxWSCamelTestSupport extends CamelTestSupport {
@@ -41,14 +42,23 @@ public class JaxWSCamelTestSupport extends CamelTestSupport {
     /**
      * Expected SOAP answer for the 'SampleWS.getSomething' method
      */
-    public static final String ANSWER = "<Envelope xmlns='http://schemas.xmlsoap.org/soap/envelope/'>"
-                                        + "<Body>" + "<getSomethingResponse xmlns='urn:test'>"
-                                        + "<result>Something</result>" + "</getSomethingResponse>"
-                                        + "</Body>" + "</Envelope>";
+    //language=xml
+    public static final String ANSWER = """
+            <Envelope xmlns='http://schemas.xmlsoap.org/soap/envelope/'>
+                <Body>
+                    <getSomethingResponse xmlns='urn:test'>
+                        <result>Something</result>
+                    </getSomethingResponse>
+                </Body>
+            </Envelope>""";
 
-    public static final String REQUEST = "<Envelope xmlns='http://schemas.xmlsoap.org/soap/envelope/'>"
-                                         + "<Body>" + "<getSomething xmlns='urn:test'/>"
-                                         + "</Body>" + "</Envelope>";
+    //language=xml
+    public static final String REQUEST = """
+            <Envelope xmlns='http://schemas.xmlsoap.org/soap/envelope/'>
+                <Body>
+                    <getSomething xmlns='urn:test'/>
+                </Body>
+            </Envelope>""";
 
     private Bus bus;
 
@@ -92,7 +102,7 @@ public class JaxWSCamelTestSupport extends CamelTestSupport {
     @BeforeEach
     public void setUpCXFCamelContext() {
         bus = BusFactory.getThreadDefaultBus();
-        // make sure the CamelTransportFactory is injected with right camel context
+        // make sure the CamelTransportFactory is injected with the right camel context
         bus.getExtension(CamelTransportFactory.class).setCamelContext(context);
     }
 
@@ -133,24 +143,32 @@ public class JaxWSCamelTestSupport extends CamelTestSupport {
      *
      * @param camelEndpoint
      */
-
     public Endpoint publishSampleWS(String camelEndpoint) {
         return Endpoint.publish("camel://" + camelEndpoint, new SampleWSImpl());
-
     }
 
     /**
-     * Create a SampleWS Server with Gzip enabled to a specified route
+     * Create a SampleWS Server with Gzip interceptors enabled to a specified route
      *
      * @param camelEndpoint
      */
-
     public Endpoint publishSampleWSWithGzipEnabled(String camelEndpoint) {
         EndpointImpl endpoint = (EndpointImpl) Endpoint.publish("camel://" + camelEndpoint, new SampleWSImpl());
         endpoint.getInInterceptors().add(new org.apache.cxf.transport.common.gzip.GZIPInInterceptor());
         endpoint.getOutInterceptors().add(new org.apache.cxf.transport.common.gzip.GZIPOutInterceptor(0));
         return endpoint;
-
     }
 
+    /**
+     * Create a SampleWS Server with Gzip feature enabled to a specified route
+     *
+     * @param camelEndpoint
+     */
+    public Endpoint publishSampleWSWithGzipFeatureEnabled(String camelEndpoint) {
+        EndpointImpl endpoint = (EndpointImpl) Endpoint.publish("camel://" + camelEndpoint, new SampleWSImpl());
+        GZIPFeature feature = new GZIPFeature();
+        feature.setThreshold(0);
+        endpoint.getFeatures().add(feature);
+        return endpoint;
+    }
 }
