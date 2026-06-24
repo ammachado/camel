@@ -158,7 +158,7 @@ public class PluginAdd extends PluginBaseCommand {
         }
 
         plugins.put(name, plugin);
-
+        printer().printf("Plugin %s added%n", name);
         saveConfig(pluginConfig);
         return 0;
     }
