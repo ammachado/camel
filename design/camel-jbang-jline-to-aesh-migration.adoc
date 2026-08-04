@@ -1,0 +1,289 @@
+---
+title: camel-jbang - Migrate from JLine to Aesh
+authors:
+  - "@ammachado"
+reviewers: []
+approvers: []
+creation-date: 2026-08-04
+last-updated: 2026-08-04
+status: proposed
+see-also: ["CAMEL-23810", "CAMEL-24202"]
+replaces: []
+superseded-by: []
+---
+
+== Summary
+
+Replace JLine (`org.jline:*`) with Aesh (`org.aesh:*`) as the terminal / readline / interactive-shell
+library across all `dsl/camel-jbang` modules. Two pieces of JLine functionality have no Aesh
+equivalent and cannot be swapped for an existing artifact: `org.jline.utils.ScreenTerminal` (a VT100
+screen-buffer emulator) and `org.jline.builtins.Nano` (JLine's built-in text editor). Both will be
+adapted into Camel-owned classes rather than dropped or replaced with a new third-party dependency.
+
+== Motivation
+
+CAMEL-23810 ("camel-jbang - Port from picocli to aesh", open, unassigned) already proposes moving the
+CLI command-dispatch layer to Aesh, citing JBang's own migration
+(https://www.jbang.dev/learn/from-picocli-to-sh-how-porting-jbangs-cli-made-everything-better/) as
+precedent. That ticket's scope is narrower than what's covered here: it addresses the picocli command
+framework, not JLine's terminal/readline/editor stack, which `camel-jbang-core` and
+`camel-jbang-plugin-tui` also depend on directly. This plan covers the full JLine surface; the
+`Shell.java` / `jline-picocli` portion (Phase 6 below) overlaps with CAMEL-23810 and the two should be
+reconciled before implementation starts (fold CAMEL-23810 into this effort, or vice versa).
+
+== Goals
+
+* Remove every `org.jline:*` artifact from every `dsl/camel-jbang/*/pom.xml`.
+* Preserve existing camel-jbang behavior and terminal output (colors, layout, image rendering,
+  interactive shell, nano editor) with no user-visible regression.
+* Land as a sequence of independently reviewable, mergeable PRs rather than one large changeset.
+
+== Non-Goals
+
+* Browser/WASM rendering of camel-tui (CAMEL-24202) — that is a separate, currently-unreleased
+  TamboUI capability and out of scope here. It was evaluated as a possible basis for replacing
+  `ScreenTerminal` (rendering through a real `xterm.js` instance in a browser DOM instead of emulating
+  VT100 in Java) but does not apply to today's terminal-hosted `camel-tui`; see <<gap-screenterminal>>.
+* Changing camel-jbang's user-facing CLI syntax, flags, or shell behavior.
+
+== Current State
+
+34 Java files across 4 modules import `org.jline`:
+
+[cols="1,1,3"]
+|===
+| Module | Direct JLine dependency | Notes
+
+| `camel-jbang-core`
+| `org.jline:jline`, `org.jline:jline-picocli` (`${jline-version}`, currently 4.3.1)
+| 26 files; the majority of JLine usage in the codebase.
+
+| `camel-jbang-plugin-tui`
+| `dev.tamboui:tamboui-jline3-backend` (`${tamboui-version}`, currently 0.4.0); `org.jline` inherited transitively via `camel-jbang-core`
+| 4 files; embeds a full interactive shell inside the TUI via a virtual terminal.
+
+| `camel-jbang-plugin-edit`
+| none direct; `org.jline` inherited transitively via `camel-jbang-core`
+| 2 files; wraps `org.jline.builtins.Nano`.
+
+| `camel-jbang-plugin-route-parser`
+| none direct; `org.jline` inherited transitively via `camel-jbang-core`
+| 1 file; `clearScreen()` only.
+|===
+
+Usage falls into six buckets (a file may span more than one):
+
+[cols="1,1,4"]
+|===
+| Bucket | File count | Aesh mapping
+
+| ANSI text styling (`Ansi`, `AttributedString`/`AttributedStringBuilder`/`AttributedStyle`)
+| 19
+| `org.aesh.utils.ANSIBuilder` / `ANSI` — covers colored text, `clearScreen()`, and cursor save/restore/hide/show, all confirmed present in `aesh-terminal-api`.
+
+| Interactive readline (`LineReader`, `LineReaderBuilder`)
+| 5
+| `org.aesh.readline.Readline` / `ReadlineBuilder` (`aesh-readline`).
+
+| Terminal / raw I/O (`Terminal`, `TerminalBuilder`, `Attributes`)
+| 13
+| `org.aesh.readline.tty.terminal.TerminalConnection` for local-TTY construction; `org.aesh.terminal.Attributes` (`ControlFlag`/`InputFlag`/`LocalFlag`/`OutputFlag`) for raw-mode manipulation; `PosixSysTerminal`/`AbstractPosixTerminal` for POSIX terminal handling. All confirmed present in `aesh-readline`/`aesh-terminal-api`.
+
+| `jline-picocli` / command dispatch
+| 1 (`Shell.java`)
+| `org.aesh.command.*` (`CommandRuntime`, `Command`, `CommandDefinition`, `GroupCommand`) — overlaps with CAMEL-23810.
+
+| Terminal image protocols (`TerminalGraphics`/`TerminalGraphicsManager` — Kitty/iTerm2/Sixel)
+| 4
+| `org.aesh.terminal.image.{KittyImage,SixelImage,ITermImage,ImageProtocolDetector,TerminalImageBuilder}` — a full equivalent, confirmed present in the `aesh-tamboui` artifact.
+
+| No Aesh equivalent (gaps)
+| 8 (some overlap with buckets above)
+| See <<gaps>>.
+|===
+
+[#gaps]
+== Gaps: no Aesh equivalent exists
+
+[#gap-screenterminal]
+=== `org.jline.utils.ScreenTerminal` / `ScreenTerminalOutputStream`
+
+Used only by `ShellPanel.java` (`camel-jbang-plugin-tui`) to embed a nested interactive shell inside a
+TamboUI panel: it parses the child shell's VT100 output into a persistent styled cell grid that gets
+converted to TamboUI widget cells on each render frame. 2,456 lines, BSD-3-Clause licensed (itself
+based on the Apache Karaf Gogo web console and the public-domain `ajaxterm` project).
+
+None of Aesh's terminal artifacts (`aesh-readline`, `aesh-terminal-api`, `aesh-terminal-http`) contain
+an equivalent. `aesh-terminal-http` tunnels raw PTY bytes over a websocket and assumes the browser
+client does its own VT100 rendering (in practice, something like `xterm.js`) — it does not solve the
+"render into a same-process TUI widget" problem `ShellPanel.java` has.
+
+**Decision:** adapt `ScreenTerminal.java`/`ScreenTerminalOutputStream.java` into a Camel-owned class
+under `camel-jbang-plugin-tui`, using JLine's implementation directly as the base (its BSD-3-Clause /
+Apache-2.0 / Public-Domain lineage is ASF-compatible). A `xterm.js`-based re-implementation was
+considered and rejected for the current terminal-hosted TUI: `xterm.js` is DOM-coupled, so using it
+here would mean either embedding a JS engine (GraalJS) purely to run one library — a heavyweight
+runtime addition that cuts against jbang's fast-startup goals — or hand-porting its parser, which is
+larger and more complex than `ScreenTerminal` itself (sixel, OSC 8 hyperlinks, Unicode width tables). A
+real `xterm.js` instance only becomes the better choice if/when TamboUI ships a browser/WASM backend
+(CAMEL-24202) and the panel can pipe PTY bytes straight to a DOM element — out of scope here.
+
+=== `org.jline.builtins.Nano` (+ `Options`, `ClasspathResourceUtil`, `ConfigurationPath`)
+
+Used by `Nano.java` (delegates wholesale to `Commands.nano(...)`), `EditCommand.java`, and
+`CamelNanoLspEditor.java`, which **subclasses** `Nano` and overrides its protected internals
+(`computeDiagnostic`, `computeSuggestions`, `insertHelp`, plus the `buffer` field) to add LSP-backed
+diagnostics and completion. 4,308 lines, same BSD-3-Clause license family as `ScreenTerminal`. This is
+the single largest and riskiest piece of the whole migration — nearly double `ScreenTerminal`'s size,
+plus a subclass with deep coupling to protected internals.
+
+**Decision:** adapt `Nano.java` and its supporting `jline-builtins` utility classes into a Camel-owned
+class the same way as `ScreenTerminal`, so `CamelNanoLspEditor` keeps subclassing something Camel owns.
+Sequence this as its own dedicated phase/PR series (<<phase-8>>) given its size — do not bundle it into
+the same PR as other work.
+
+=== `org.jline.utils.Display` / `org.jline.utils.Status`
+
+Used by `InteractiveTerminal.java` (full-screen differential redraw for `CamelHistoryAction --it` and
+`CamelRouteDiagramAction`). 1,187 and 387 lines respectively, same license family, same package
+(`org.jline.utils`) as `ScreenTerminal`. Much smaller than `ScreenTerminal`/`Nano` — adapt alongside
+`ScreenTerminal` in <<phase-0>> rather than as a separate large effort.
+
+== Verification items (unresolved, low-risk, check during implementation)
+
+* `aesh-tamboui-3.3.jar` (built via `maven-shade-plugin` as part of `aesh-all`) contains a compiled
+  `org/jline/terminal/impl/jni/JniTerminalProvider.class` plus JLine `native-image` metadata. This
+  looks like packaging fallout from `aesh-tamboui`'s own demo module (`org.aesh.tamboui.examples.*`),
+  not a hard runtime dependency of the classes camel-jbang would actually use (`TuiSupport`,
+  `TuiCommand`, `TuiAppCommand`). Confirm with `mvn dependency:tree` after wiring the real dependency
+  that no `org.jline` groupId reappears transitively; add a CI check (or reuse the existing
+  `grep -r org.jline` check) that fails the build if it does.
+* Aesh's history-persistence API shape for `Readline`/`ReadlineBuilder` was not inspected in detail —
+  needed to migrate `TuiShellHistorySupport.java`/`TuiShellHistorySupportTest.java`
+  (`LineReader.DISABLE_HISTORY`/`HISTORY_SIZE`/`HISTORY_FILE_SIZE` variables today). Spike this at the
+  start of <<phase-4>>.
+* Confirm `dev.tamboui:tamboui-aesh-backend` implements the same `dev.tamboui.terminal.Backend` SPI as
+  `tamboui-jline3-backend` before assuming `TuiBackendHelper.java` is a same-shape swap.
+
+== Migration Plan
+
+Ordered so that each phase is independently reviewable and the codebase keeps building/passing tests
+between phases (both libraries coexist as dependencies until <<phase-9>>).
+
+[#phase-0]
+=== Phase 0 — Owned internals foundation
+
+Add `aesh-readline`, `aesh-terminal-api`, and `dev.tamboui:tamboui-aesh-backend` as dependencies
+alongside the existing JLine ones (no consumer changes yet). Create an internal package (e.g.
+`org.apache.camel.dsl.jbang.core.terminal.vt`) holding adapted copies of `ScreenTerminal`,
+`ScreenTerminalOutputStream`, `Display`, and `Status`, each carrying the required BSD-3-Clause
+attribution header. Add the corresponding `LICENSE`/`NOTICE` entries per ASF third-party-code policy —
+this is source inclusion, not a dependency declaration, so it needs different handling than the
+`org.jline` Maven coordinates being removed. No functional risk: nothing depends on these classes yet.
+
+=== Phase 1 — ANSI styling (19 files)
+
+Swap `Ansi`/`AttributedString`/`AttributedStringBuilder`/`AttributedStyle` for `ANSIBuilder`/`ANSI` in
+the files that use JLine purely for colored output with no terminal I/O: `JSonHelper`, `XmlHelper`,
+`CamelLoadAction`, `CamelSendAction`, `CamelSpanAction`, `CamelTraceAction`, `CamelStubAction`,
+`CamelBrowseAction`, `TransformMessageAction`, `CamelReceiveAction`, `CamelLogAction`,
+`MessageTableHelper`, `EvalExpressionCommand`, `RouteParserCommand`, plus the styling-only portions of
+`Debug`, `ActionWatchCommand`, `ProcessWatchCommand`, and `Shell` (readline/picocli portions of `Shell`
+stay on JLine until <<phase-6>>). No shared state, each file independent — safe to split into several
+small PRs and a good place to surface friction with Aesh's API before touching shared plumbing.
+
+=== Phase 2 — Terminal plumbing foundation
+
+Migrate `EnvironmentHelper`'s central `Terminal` field and `getActiveTerminal()`/`setActiveTerminal()`/
+`isInteractiveTerminal()` from `org.jline.terminal.Terminal` to Aesh's
+`org.aesh.readline.tty.terminal.TerminalConnection`. This is the highest-leverage single change in the
+whole plan — nearly every remaining file reads through this field — so do it once, in its own PR, with
+focused tests before moving on. Follow immediately with the two simple raw-`InputStream` consumers,
+`Init.java` and `CommandHelper.java` (`Scanner` over `terminal.input()`), which become mechanical once
+`EnvironmentHelper`'s return type changes.
+
+=== Phase 3 — Terminal image protocols (4 files)
+
+Swap `TerminalGraphics`/`TerminalGraphicsManager` for `org.aesh.terminal.image.*` in `CamelHistoryAction`
+(`--diagram` mode), `CamelRouteDiagramAction`, `CamelRouteTopologyAction`, and `ListError`.
+
+[#phase-4]
+=== Phase 4 — Interactive readline consumers
+
+Migrate `Ask.java` (`LineReaderBuilder` + `readLine()` loop, catching `UserInterruptException`/
+`EndOfFileException`) to `Readline`/`ReadlineBuilder`. Migrate `TuiShellHistorySupport.java` and its
+test to Aesh's history-persistence API — spike this first per <<gap-screenterminal>>'s sibling
+verification item above.
+
+=== Phase 5 — TUI backend and embedded shell panel
+
+Swap `tamboui-jline3-backend` for `tamboui-aesh-backend` in `camel-jbang-plugin-tui/pom.xml`
+(`TuiBackendHelper.java`). In `ShellPanel.java`, replace the `LineDisciplineTerminal`/`org.jline.shell.*`
+virtual-terminal wiring with Aesh equivalents, and swap `ScreenTerminal`/`ScreenTerminalOutputStream`
+for the Phase 0 owned adaptation.
+
+[#phase-6]
+=== Phase 6 — `Shell.java` (the `camel shell` REPL) and `jline-picocli`
+
+The most complex single file: `PicocliCommandRegistry` (already flagged in-code as pending an upstream
+JLine merge), `DefaultAliasManager`, `CommandTailTipWidgets`, `PosixCommandGroup`/
+`InteractiveCommandGroup`. Target `org.aesh.command.*` (`CommandRuntime`, `Command`,
+`CommandDefinition`, `GroupCommand`). **Reconcile with CAMEL-23810 before starting this phase** — decide
+whether it absorbs this phase's scope or is closed in favor of it, to avoid duplicate work.
+
+=== Phase 7 — `InteractiveTerminal.java`
+
+Migrate raw `Attributes`/`ICANON`/`ECHO`/`ISIG` manipulation to Aesh's `Attributes` /
+`PosixSysTerminal`/`AbstractPosixTerminal`. Migrate `Display`/`Status` usage to the Phase 0 owned
+adaptation. Powers `CamelHistoryAction --it` and `CamelRouteDiagramAction`'s Enter-to-continue prompt.
+
+[#phase-8]
+=== Phase 8 — Editor plugin (`camel-jbang-plugin-edit`)
+
+Largest and riskiest phase — sequence it last, as its own dedicated JIRA ticket/PR series, not bundled
+with anything else. Point `CamelNanoLspEditor` at the Phase 0 owned `Nano` adaptation instead of
+`org.jline.builtins.Nano`; migrate `EditCommand.java`'s `Options`/`ClasspathResourceUtil`/
+`ConfigurationPath` usage (jline-builtins utility classes — port alongside `Nano` in Phase 0 once their
+exact usage here is scoped).
+
+[#phase-9]
+=== Phase 9 — Cleanup
+
+Remove `jline`, `jline-picocli`, `jline-builtins`, and `tamboui-jline3-backend` from every
+`dsl/camel-jbang/*/pom.xml`. Add a build-time or CI check that fails if any `org.jline` import
+reappears under `dsl/camel-jbang`. Confirm via `mvn dependency:tree` that no module pulls `org.jline`
+back in transitively (see the `aesh-tamboui` shading note above).
+
+== Testing Strategy
+
+* Bucket-1 (ANSI styling) and bucket "image protocols" changes are straightforward to cover with
+  existing/extended snapshot-style tests (e.g. the pattern already used by `ShellPanelColorTest`).
+* `EnvironmentHelper` (Phase 2) and `ShellPanel`/backend swap (Phase 5) need focused unit tests plus
+  manual verification — terminal I/O is inherently hard to fully automate.
+* The interactive-only paths (`camel shell` REPL in Phase 6, `--it` mode in Phase 7, the nano editor in
+  Phase 8) cannot be meaningfully unit-tested end-to-end; each of those phases needs an explicit manual
+  verification checklist before merge (documented in that phase's PR description) in addition to
+  whatever unit coverage exists for the non-interactive parts.
+
+== Risks
+
+* **`Shell.java` / Phase 6** — deepest coupling to JLine shell internals, spans three of the six
+  buckets simultaneously, and overlaps an already-open ticket (CAMEL-23810). Highest coordination risk
+  in the plan.
+* **`CamelNanoLspEditor.java` / Phase 8** — subclasses a 4,308-line class and overrides protected
+  internals; the largest single chunk of new Camel-owned code in this migration.
+* **License/NOTICE handling** — Phase 0 changes the nature of the JLine relationship from "external
+  dependency" to "adapted included source" for `ScreenTerminal`, `Display`, `Status`, and `Nano`. This
+  needs correct `LICENSE`/`NOTICE` treatment per ASF policy, not just a code review.
+* **Transitive re-introduction of JLine** — the `aesh-tamboui` shading behavior noted above means the
+  Phase 9 exit criterion (zero `org.jline` anywhere under `dsl/camel-jbang`) needs an explicit
+  dependency-tree check, not just an import grep.
+
+== Open Questions
+
+* Should CAMEL-23810 be repurposed to cover this entire plan, or kept scoped to Phase 6 only with new
+  ticket(s) opened for the rest? (Per this project's JIRA rules, only an unassigned ticket can be picked
+  up, and it must be assigned to the operator before work starts.)
+* Should Phases 0-9 ship as one JIRA epic with sub-tasks, or as independently-tracked tickets per phase?
+  Given the size (34 files, 2 owned-code ports, multiple modules), sub-tasks under one epic likely
+  track the dependency ordering above more clearly than flat independent tickets.
